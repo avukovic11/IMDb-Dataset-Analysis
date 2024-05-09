@@ -1,0 +1,502 @@
+---
+title: "OSP - Analiza podatkovnog skupa IMDb movie dataset"
+author: "0035235027 Adam Vuković & 0036542276 Ivan Zeba"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+library(knitr)
+library(kableExtra)
+library(corrplot)
+library(tidyr)
+library(dplyr)
+library(readr)
+library(lubridate)
+library(stringr)
+library(ggplot2)
+library(gridExtra)
+library(forcats)
+library(scales)
+
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Uvod
+
+U sklopu predmeta Osnove statističkog programiranja provodimo projekt u kojem analiziramo podatkovni skup "IMDb movie dataset". U ovom projektu obrađujemo i analiziramo podatkovni skup, u kojem se nalaze informacije o filmovima sa portala IMDB, sa podatcima od 1916. do 2016. godine. Neke od dostupnih varijabli su: movie_title, title_year, director_name, duration, gross, budget itd. Pokušat ćemo prikazati dostupne podatke na što zanimljiviji i korisniji način.
+
+
+# Učitavanje i prilagodba podataka
+
+### Učitavanje podataka
+
+Podatkovni skup "IMDb movie dataset" je pohranjen u .csv datoteci tako da smo za otvaranje datoteke koristili funkciju read_csv iz paketa {readr}. Neobrađeni skup imao je 5043 redaka i 28 stupaca. Prilikom istraživanja skupa istražili smo postotke nedostajućih vrijednosti za svaku varijablu.
+```{r include = FALSE}
+data <- read_csv("data/IMDB_movie_dataset.csv")
+```
+```{r echo = FALSE}
+for(col_name in names(data)){
+  if(sum(is.na(data[, col_name])) > 0){
+    cat("Postotak nedostajućih vrijednosti za varijablu ", col_name, ": ", sum(is.na(data[, col_name])) / nrow(data) * 100, "%\n")
+  }
+}
+```
+
+### Čišćenje podataka
+
+Kod čišćenja podataka smo obrisali duplikate filmova, obrisali smo filmove koji nemaju title_year jer smo zaključili da su to zapravo serije. Također smo izbrisali stupce koje nismo koristili ili stupce s velikim postotkom nedostajućih vrijednosti (movie_imdb_link, facenumber_in_poster, actor_1_facebook_likes, actor_2_facebook_likes, actor_3_facebook_likes i aspect_ratio)
+```{r include = FALSE}
+data <- data %>% distinct(movie_imdb_link, .keep_all = TRUE)
+data <- data %>% filter(!is.na(title_year))
+data <- select(data, -movie_imdb_link, -facenumber_in_poster, -actor_1_facebook_likes, -actor_2_facebook_likes, -actor_3_facebook_likes, -aspect_ratio)
+```
+
+### Prilagođavanje podataka
+
+Kako bismo što bolje prikazali podatke, dodali smo našem podatkovnom skupu još jedan stupac "decade", npr. 2000.-2009. -> 2000s (iako desteljeće počinje prve godine).
+```{r results='hide'}
+data$decade <- ifelse(!is.na(data$title_year), paste0(data$title_year %/% 10 * 10, "s"), NA)
+```
+
+
+# Deskriptivna analiza
+
+## Filmovi kroz godine
+
+### Broj filmova kroz godine
+```{r echo = FALSE}
+data %>% select(title_year) %>% filter(!is.na(title_year)) %>% group_by(title_year) %>% summarise(broj_filmova_godina = n()) -> filmovi_po_godinama
+ggplot(data, aes(x = title_year)) + 
+  geom_histogram(binwidth = 5,na.rm = T, fill = "blue", color = "black", alpha = 0.7) + 
+  scale_y_log10() + 
+  labs(x = "Godine", y = "Broj filmova") +
+  scale_x_continuous(breaks = seq(1920, 2020, 5)) + coord_polar()
+```
+
+Graf prikazuje trend porasta broja filmova po godinama smještenih u ladice od veličine 5 godina. Zadnja ladica je anomalija, ali zamo zato što ta ladica ne obuhvaća svih 5 godina.
+
+### Omjer filmova u boji i crno-bijelih filmova kroz desetljeća
+
+```{r echo = FALSE}
+data %>% filter(!is.na(decade), !is.na(color)) -> filtered_data
+
+ggplot(filtered_data, aes(x = decade, fill = color)) + 
+  geom_bar(position = "fill", color = "black", alpha = 0.7) +
+  labs(x = "Razdoblje", y = "Omjer", color = "boja") +
+  scale_fill_manual(name = "Boja",  
+                    labels = c("Crno-bijelo", "U boji"),  
+                    values = c("grey", "blue"))
+```
+
+Graf nam pokazuje omjer filmova u boji i crno-bijelih filmova kroz desetljeća do danas. Prema dostupnim podatcima prvi film u boji je nastao prije najstarijeg filma u našem podatkovnom skupu. Tako da na grafu možemo vidjeti kako je 40-ih godina došlo do nagle ekspanzije filmova u boji te je do 70-ih godina film u boji postao sasvim uobičajena pojava. U zadnjih 10 godina crno-bijeli film je rijetka pojava.
+
+### Prosječni budžet filmova kroz godine
+```{r echo = FALSE}
+data[,c("title_year", "budget")] %>%  filter(!is.na(title_year), !is.na(budget)) %>% group_by(title_year) %>% summarise(.,mean_budget = mean(budget)) -> year_budget
+ggplot(year_budget, aes(x=title_year, y=mean_budget)) + 
+  geom_point(color = "blue") +
+  scale_y_log10(labels = scales::label_number()) +
+  stat_smooth(formula = y ~ x, se = FALSE, color = "lightblue", linetype = 2, method = "loess") +
+  labs(x = "Godina", y = "Prosječni budžet")
+```
+
+Na grafu možemo primjeniti veliki porast prosječnog budžeta filmova kroz godine. Kako bismo bolje pokazali o kakvom se rastu radi, y os smo morali logaritamski skalirati.
+
+## Jezici
+
+### Razdioba govornih jezika u filmovima
+```{r echo = FALSE}
+#Top 10 jezik ukljucujuci engleski
+data %>% select(language) %>% filter(!is.na(language)) %>% group_by(language) %>% summarise(broj = n()) %>% slice_max(order_by = broj, n = 10) -> jezici
+#jezici
+g1 <- ggplot(jezici, aes(x = reorder(as.factor(language), -broj), y = broj)) + 
+  geom_bar(stat = "identity", fill = "blue", color = "black", alpha = 0.7) + 
+  labs(title = "Uključujući engleski jezik", x = "Jezik", y = "Broj filmova")
+
+jezici %>% filter(language != "English") -> jezici
+g2 <- ggplot(jezici, aes(x = reorder(as.factor(language), -broj), y = broj)) + 
+  geom_bar(stat = "identity", fill = "blue", color = "black", alpha = 0.7) + 
+  labs(title = "Bez engleskog jezika", x = "Jezik", y = "Broj filmova")
+
+grid.arrange(g1, g2, nrow = 2)
+```
+
+U prvome grafu možemo vidjeti kako u našem podatkovnom skupu ima daleko najviše filmova na engleskom jeziku. Kako je broj filmova na engleskom jeziku toliko veći od ostalih, dodan je još jedan graf koji prikazuje razdiobu filmova koji nisu na engleskom jeziku. Može se zaključiti da je razdioba relativno sukladna s brojem ljudi u svijetu koji priča taj jezik.
+
+## Ključne riječi
+
+### Top 10 najčešćih ključnih riječi
+
+```{r echo = FALSE, warning=FALSE, message=FALSE}
+data %>%
+  select(plot_keywords) %>%
+  separate_rows(plot_keywords, sep = "\\|") %>%
+  filter(!is.na(plot_keywords)) %>%
+  count(plot_keywords, sort = TRUE) %>%
+  top_n(10) %>% 
+  ggplot(., aes(x = fct_reorder(plot_keywords, -n), y = n)) +
+  geom_col(fill = "blue", color = "black", alpha = 0.7) +
+  labs(x = "Ključne riječi",
+     y = "Frekvencija") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1, vjust = 1))
+```
+
+Iz ovog grafa možemo iščitati glavne motive filmova i neke norme industrije. Vidimo da studiji i scenaristi najviše vole raditi filmove o svakakvim temama, bilo to o ljubavi ili o ubojstvu (ili oboje). Također možemo vidjeti da je policija česti lik u filmovima te da radnja često bude smještena u New Yorku, što je zanimljivo s obzirom da je Hollywood blizu Los Angelesa koji se ne nalazi na listi.
+
+## IMDb ocjene filmova
+
+### Razdioba IMDb ocjena
+```{r echo = FALSE}
+ggplot(data, aes(x = imdb_score)) +
+  geom_histogram(binwidth = 0.5, fill = "blue", color = "black", alpha = 0.7, boundary = 0.5) +
+  labs(x = "IMDb ocjena",
+       y = "Broj filmova") +
+  scale_x_continuous(breaks = 1:10, limits = c(1, 10))
+```
+
+Prvo, pogledajmo razdiobu ocjena filmova. Vidimo da graf prati normalnu razdiobu, ali pomaknutu u desno. Očekivano bi bilo da ima najviše ocjena oko 5.5 (pošto je najniža ocjena 1, a ne 0), ali vidimo da su IMDb korisnici općenito blaži u ocjenjivanju filmova tako da je najviše ocjena između 6 i 7.
+
+### Top 10 filmova - ocjene i ostalo
+
+```{r echo=FALSE, error=FALSE, warning=FALSE,}
+data %>% filter(!is.na(title_year) & num_voted_users > 1000) %>% select(., title_year, imdb_score, duration, gross, budget, movie_title) %>% slice_max(order_by = imdb_score, n = 10, with_ties = F) -> top_10_filmova
+
+top_10_filmova[, c("movie_title", "title_year", "imdb_score", "budget", "duration", "gross")] %>%
+  transmute(
+    Naslov = movie_title,
+    Godina = title_year,
+    Ocjena = imdb_score,
+    Budzet = dollar(budget),
+    Trajanje = duration,
+    Bruto_dohodak = dollar(gross)) %>%
+  kable(., 
+        caption = "Top 10 filmova",
+        row.names = FALSE) %>%
+  kable_styling("striped", full_width = FALSE)
+
+
+# ak mislimo imat color = movie title, onda moramo dodat legendu ili sam mozemo izbrisat color = movie_title
+plot1 <- ggplot(top_10_filmova,aes(title_year, imdb_score, color = movie_title)) + geom_point(na.rm = T) + labs(x = "Godina", y = "IMDB ocjena")+ theme(legend.position = "none")
+
+plot2 <- ggplot(top_10_filmova,aes(title_year, duration, color = movie_title)) + geom_point(na.rm = T) + labs(x = "Godina", y = "Trajanje") + theme(legend.position = "none")
+
+plot3 <- ggplot(top_10_filmova,aes(title_year, budget, color = movie_title)) + geom_point(na.rm = T) + labs(x = "Godina", y = "Budžet") + 
+  scale_y_log10(labels = scales::label_number()) + theme(legend.position = "none")
+
+plot4 <- ggplot(top_10_filmova,aes(title_year, gross, color = movie_title)) + geom_point(na.rm = T) + labs(x = "Godina", y = "Bruto dohodak") + 
+  scale_y_log10(labels = scales::label_number()) + theme(legend.position = "none")
+
+grid.arrange(plot1, plot3, plot2, plot4, ncol = 2)
+```
+
+Tablicom smo prikazali 10 najbolje ocjenjenih filmova te njihove atribute: godinu izlaska, IMDb ocjenu, budžet, trajanje i bruto dobit. Nakon toga smo napravili četiri manja grafa gdje smo prikazali vrijednosti njihovih atirbuta(IMDb ocjena, budžet, trajanje i bruto dobit) u odnosu na godinu izlaska.
+
+### Prosječna ocjena filmova po trajanju
+
+```{r echo = FALSE}
+data %>% select(imdb_score, duration) %>% group_by(duration) %>% summarise(prosjecna_ocjena = mean(imdb_score)) -> dataset7
+reg7 = lm(prosjecna_ocjena ~ duration, dataset7)
+plot(dataset7$duration, dataset7$prosjecna_ocjena,
+     xlab = "Trajanje",
+     ylab = "Prosječna ocjena")
+abline(reg7, col = "red")
+```
+
+Ovaj graf nam pokazuje prosječnu ocjenu u odnosu na trajanje filma. Grupirali smo podatke po minutama trajanja filma te dobili prosječne ocjene za svaku minutu.
+Pravac crvene boje predstavlja funkciju koja predviđa prosječnu ocjenu za pojedino trajanje filmova. Jednadžba pravca je oblika: (Prosječna ocjena) = 6.2155021 + 0.0058487 * (Trajanje).
+
+### Prosječna IMDb ocjena po žanru
+
+```{r echo = FALSE}
+data %>%
+  separate_rows(genres, sep = "\\|") %>%
+  group_by(genres) %>%
+  summarise(mean_score = mean(imdb_score, na.rm = TRUE), num_movies = n()) %>%
+  filter(num_movies >= 10) %>%
+  ggplot(aes(x = reorder(genres, -mean_score), y = mean_score)) +
+  geom_col(fill = "blue", color = "black", alpha = 0.7) +
+  labs(x = "Žanr",
+       y = "Prosječna IMDb ocjena") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+   coord_cartesian(ylim = c(5, 7.5))
+```
+
+Pogledajmo koje žanrove ljudi najviše cijene. Izbacili smo žanrove koji imaju manje od 10 filmova u podatkovnom skupu (poput vijesti i film-noira). Možemo zaključiti da ljudi daju najviše ocjene "ozbiljnim" filmovima (žanrovi poput dokumentarnih filmova, biografija, povijesnih filmova, itd.). Još jedna stvar koju bismo mogli zaključiti je da ljudi bolje ocjenjuju filmove čija radnja se dogodila ili se može dogoditi, tu bih kao primjer opet naveli iste žanrove kao i prije. S druge strane, lošije su ocijenjeni žanrovi koji su "neozbiljni" poput komedija i obiteljskih filmova ili žanrovi čija je radnja često nerealna poput horora, akcije i znanstvene fantastike.
+
+
+### Usporedbe ocjena sadržaja (engl. content rating)
+
+```{r echo = FALSE}
+data_sorted <- data %>%
+  filter(!is.na(content_rating) & content_rating %in% c("G", "PG", "PG-13", "R", "NC-17", "Not Rated")) %>% 
+  count(content_rating)
+
+ggplot(data_sorted, aes(x = reorder(content_rating, -n), y = n)) +
+  geom_bar(fill = "blue", color = "black", alpha = 0.7, stat = "identity") +
+  labs(title = "Broj filmova po ocjeni sadržaja",
+       x = "Ocjena sadržaja",
+       y = "Broj filmova") -> g1
+
+avg_score_by_rating <- data %>%
+  filter(!is.na(content_rating) & content_rating %in% c("G", "PG", "PG-13", "R", "NC-17", "Not Rated")) %>% 
+  group_by(content_rating) %>%
+  summarise(avg_imdb_score = mean(imdb_score, na.rm = TRUE)) 
+
+ggplot(avg_score_by_rating, aes(x = reorder(content_rating, -avg_imdb_score), y = avg_imdb_score, fill = content_rating)) +
+  geom_col(fill = "blue", color = "black", alpha = 0.7) +
+  labs(x = "Ocjena sadržaja",
+       y = "Prosječna IMDb ocjena") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  coord_cartesian(ylim = c(6, 7)) -> g2
+
+avg_gross_by_rating <- data %>%
+  filter(!is.na(content_rating) & !is.na(gross) & content_rating %in% c("G", "PG", "PG-13", "R", "NC-17", "Not Rated")) %>% 
+  group_by(content_rating) %>%
+  summarise(median_gross = median(gross, na.rm = TRUE))
+
+ggplot(avg_gross_by_rating, aes(x = reorder(content_rating, -median_gross), y = median_gross, fill = content_rating)) +
+  geom_col(fill = "blue", color = "black", alpha = 0.7) +
+  labs(x = "Ocjena sadržaja",
+       y = "Medijan bruto dohotka") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = scales::dollar_format()) -> g3
+
+g1
+grid.arrange(g2, g3, ncol = 2)
+```
+
+Ova 3 grafa istražuju utjecaj ocjene sadržaja na uspješnost filma. U analizi smo ostavili samo ocjene sadržaja koje se koriste od 1996. do danas u SAD-u jer tih filmova ima najviše te radi preglednosti. Prema MPA (Motion Picture Association), to su redom:
+- Rated G: General audiences – All ages admitted.
+- Rated PG: Parental guidance suggested – Some material may not be suitable for children.
+- Rated PG-13: Parents strongly cautioned – Some material may be inappropriate for children under 13.
+- Rated R: Restricted – Under 17 requires accompanying parent or adult guardian.
+- Rated NC-17: Adults Only – No one 17 and under admitted. 
+Od ostalih ocjena sadržaja ostavili smo i Not Rated koji se koristi kad filmu iz nekog razloga još uvijek nije dana ocjena sadržaja.
+
+Prvi graf prikazuje razdiobu broja filmova gdje vidimo da broj filmova pada što je film primjereniji većoj publici. Jedina anomalija je to što ima najmanje filmova koji su 18+, izgleda da ta ocjena u globalu studijima predstavlja problem. 
+S druge strane, drugi graf nam govori kako su ipak Not Rated i 18+ filmovi najbolje ocijenjeni, iako je razlika IMDb ocjena između svih kategorija vrlo mala. 
+Zadnji graf potvrđuje opću pretpostavku da primjereniji filmovi zarađuju najviše novaca. To je jedini od 3 grafa koji nema anomalija nego su ocjene sadržaja sortirane po primjerenosti počevši od najprimjerenije.
+
+## Glumci
+
+### Najboljih 10 glumaca koji su napravili barem 10 filmova
+
+```{r echo = FALSE}
+actor_data <- data %>%
+  select(movie_title, actor_1_name, actor_2_name, actor_3_name, imdb_score, title_year) %>%
+  gather(key = "actor_role", value = "actor_name", -movie_title, -imdb_score, -title_year) %>%
+  filter(!is.na(actor_name))
+
+avg_score_by_actor <- actor_data %>%
+  group_by(Ime_glumca = actor_name) %>%
+  filter(n() >= 10) %>% 
+  summarise(Prosjecna_ocjena = mean(imdb_score, na.rm = TRUE) %>% round(., 2), Broj_filmova = n()) %>% 
+  slice_max(order_by = Prosjecna_ocjena, n = 10)
+
+kable(avg_score_by_actor,
+      row.names = FALSE) %>%
+  kable_styling("striped", full_width = FALSE)
+```
+
+Tablicom je prikazano top 10 glumaca koji su napravili 10 ili više filmova, broj filmova u kojima su sudjelovali te prosječna ocjena tih filmova. U tablici stvarno prepoznajemo najpoznatija imena u Hollywoodu. Na vrhu se nalazi John Ratzenberger koji je najpoznatiji po svojoj ulozi u seriji Cheers, a razlog njegove visoke ocjene je to što je posuđivao glas sporednim likovima u mnoštvu uspješnih Pixarovih filmova. 
+
+```{r echo=FALSE}
+avg_score_by_actor <- actor_data %>%
+  group_by(actor_name) %>%
+  summarise(avg_imdb_score = mean(imdb_score, na.rm = TRUE), movie_count = n()) 
+
+max_movie_count <- max(avg_score_by_actor$movie_count)
+breaks <- c(seq(0, 12, by = 3), seq(15, 25, 5), 30, max_movie_count)
+avg_score_by_actor <- avg_score_by_actor %>%
+  mutate(movie_count_bin = cut(movie_count, breaks = breaks, include.lowest = TRUE))
+
+# vidimo da avg imdb score raste s brojem filmova koje je glumac napravio
+ggplot(avg_score_by_actor, aes(x = movie_count_bin, y = avg_imdb_score)) +
+  geom_bar(stat = "summary", fun = "mean", fill = "blue", color = "black", alpha = 0.7) +
+  labs(title = "Prosječna IMDb ocjena po broju filmova glumca",
+       x = "Broj filmova",
+       y = "Prosječna IMDb ocjena") +
+  coord_cartesian(ylim = c(6, 7))
+```
+
+Na grafu vidimo kako je broj filmova u kojima je glumac glumio direknto koreliran s boljom prosječnom ocjenom filmova na kojima je radio. To je, naravno, očekivano jer najuspješniji glumci generalno glume u najcjenjenijim filmovima i stalno dobivaju nove uloge. "Ladice" grafa podijeljene su tako da prvo idu 3 po 3, zatim 5 po 5, a na kraju je prikazana ladica s glumcima koji su odglumili više od 30 filmova. "Ladice" su sve veće i veće iz razloga što je mali broj glumaca glumio u puno filmova.
+
+### Prvi i zadnji film glumaca
+```{r echo = FALSE}
+actor_data <- data %>%
+  select(movie_title, actor_1_name, actor_2_name, actor_3_name, imdb_score, title_year, gross, budget) %>%
+  gather(key = "actor_role", value = "actor_name", -movie_title, -imdb_score, -title_year, -gross, -budget) %>%
+  filter(!is.na(actor_name))
+
+filtered_actor_data <- actor_data %>%
+  group_by(actor_name) %>%
+  filter(n() > 10) # ovo isto mozemo mijenjat
+
+# Extract the first and last movie ratings for each actor
+first_last_ratings <- filtered_actor_data %>%
+  arrange(title_year) %>%
+  group_by(actor_name) %>%
+  summarise(first_movie_rating = first(imdb_score), last_movie_rating = last(imdb_score))
+
+first_last_budget <- filtered_actor_data %>%
+  arrange(title_year) %>%
+  group_by(actor_name) %>%
+  summarise(first_movie_budget = first(budget), last_movie_budget = last(budget))
+
+first_last_gross <- filtered_actor_data %>%
+  arrange(title_year) %>%
+  group_by(actor_name) %>%
+  summarise(first_movie_gross = first(gross), last_movie_gross = last(gross))
+
+# Calculate the median of the first and last movie ratings
+median_ratings <- first_last_ratings %>%
+  summarise(median_first_rating = median(first_movie_rating, na.rm = TRUE),
+            median_last_rating = median(last_movie_rating, na.rm = TRUE))
+
+median_budget <- first_last_budget %>%
+  summarise(median_first_budget = median(first_movie_budget, na.rm = TRUE),
+            median_last_budget = median(last_movie_budget, na.rm = TRUE))
+
+median_gross <- first_last_gross %>%
+  summarise(median_first_gross = median(first_movie_gross, na.rm = TRUE),
+            median_last_gross = median(last_movie_gross, na.rm = TRUE))
+
+cat("Medijan ocjena prvog filma svih glumaca:", median_ratings$median_first_rating, "\n")
+cat("Medijan ocjena zadnjeg filma svih glumaca:", median_ratings$median_last_rating, "\n\n")
+cat("Medijan budžeta prvog filma svih glumaca:", dollar(median_budget$median_first_budget), "\n")
+cat("Medijan budžeta zadnjeg filma svih glumaca:", dollar(median_budget$median_last_budget), "\n\n")
+cat("Medijan bruto dohotka prvog filma svih glumaca:", dollar(median_gross$median_first_gross), "\n")
+cat("Medijan bruto dohotka zadnjeg filma svih glumaca:", dollar(median_gross$median_last_gross), "\n")
+```
+
+U ovom odjeljku promatramo prve i zadnje filmove glumaca. Rezultati nam govore kako je unatoč manjem budžetu i bruto dohotku prvog filma u odnosu na zadnji film ipak ocjena prvog filma bolja za dosta velikih 0.5. Dolazimo do zaključka da glumci na kraju svoje karijere ipak dobivaju uloge u lošijim filmovima, vjerojatno radi gubitka glumačkih sposobnosti u starijoj dobi.
+
+## Redatelji
+
+### Top 10 najboljih redatelja
+```{r echo = FALSE}
+data %>% 
+  select(., director_name, imdb_score, movie_title, num_voted_users) %>%
+  group_by(Redatelj = director_name) %>%
+  filter(num_voted_users > 1000 & n() == 1) %>%
+  summarise(Prosjecna_ocjena = mean(imdb_score)) %>%
+  slice_max(., order_by = Prosjecna_ocjena, n = 10, with_ties = F) -> najbolje_ocjenjeni_redatelji_1
+
+kable(najbolje_ocjenjeni_redatelji_1, 
+      caption = "Top 10 redatelja s jednim filmom",
+      row.names = FALSE) %>%
+  kable_styling("striped", full_width = FALSE)
+```
+
+```{r echo = FALSE}
+data %>% 
+  select(., director_name, imdb_score, num_voted_users) %>% 
+  group_by(Redatelj = director_name) %>% 
+  filter(num_voted_users > 1000 & n() >= 2) %>%
+  summarise(Prosjecna_ocjena = mean(imdb_score), Broj_filmova = n()) %>% 
+  slice_max(., order_by = Prosjecna_ocjena, n = 10) %>% 
+  mutate(Prosjecna_ocjena = round(Prosjecna_ocjena, 2))-> najbolje_ocjenjeni_redatelji 
+
+kable(najbolje_ocjenjeni_redatelji, 
+      caption = "Top 10 redatelja s barem 2 filma",
+      row.names = FALSE) %>%
+  kable_styling("striped", full_width = FALSE)
+```
+
+Najbolje redatelje po prosječnoj IMDb ocjeni smo odlučili prikazati u obliku talica. Prethodne dvije tablice prikazuju 10 najboljih redatelja s 1 filmom i 10 najboljih redatelja s barem 2 filma. Primjetili smo da pri odabiru 10 najboljih redatelja po prosječnoj IMDb ocjeni, većina ih ima samo jedan film, jedini film tog redatelja koji je poznat i dobro ocijenjen. Zbog toga smo odlučili podijeliti redatelje u 2 skupine, kako bi do izražaja došli i redatelji s većim brojem filmova.
+
+### Ocjene i trajanje filmova najboljih 10 redatelja (s barem 2 filma)
+
+```{r echo = FALSE}
+
+data %>% filter(., director_name %in% najbolje_ocjenjeni_redatelji$Redatelj) %>%
+  select(director_name, duration, imdb_score, movie_title) -> filmovi_najbolje_ocjenjenih_redatelja
+
+filmovi_najbolje_ocjenjenih_redatelja %>%
+  group_by(director_name) %>%
+  filter(!is.na(duration), !is.na(imdb_score)) %>%
+  mutate(prosjecna_ocjena = mean(imdb_score)) -> filmovi_najbolje_ocjenjenih_redatelja
+
+ggplot(filmovi_najbolje_ocjenjenih_redatelja, aes(x = duration, y = imdb_score, color = director_name)) +
+  geom_point() +
+  labs(x = "Trajanje", y = "IMDb ocjena", color = "Redatelj") +
+  scale_color_brewer(palette = "Paired")
+```
+
+Prikaz svih filmova najboljih 10 redatelja koji imaju barem 2 filma. Na x osi je prikazano trajanje filma, na y osi IMDb ocjena, te se u legendi nalazi objašnjenje kojem redatelju film pripada.
+
+### Prosječna IMDb ocjena po broju filmova redatelja
+
+```{r echo = FALSE}
+director_data <- data %>%
+  group_by(director_name) %>%
+  summarise(avg_imdb_score = mean(imdb_score, na.rm = TRUE), movie_count = n()) 
+
+max_movie_count <- max(director_data$movie_count)
+breaks <- c(0:5, seq(6, 9, by = 3), max_movie_count)
+dd <- director_data %>%
+  mutate(movie_count_bin = cut(movie_count, breaks = breaks, include.lowest = TRUE))
+
+# vidimo da avg imdb score raste s brojem filmova koje je redatelj napravio
+ggplot(dd, aes(x = movie_count_bin, y = avg_imdb_score)) +
+  geom_bar(stat = "summary", fun = "mean", fill = "blue", color = "black", alpha = 0.7) +
+  labs(x = "Broj filmova",
+       y = "Prosječna IMDb ocjena") + 
+  coord_cartesian(ylim = c(6, 7))
+```
+
+Na ovome grafu, za razliku od sukladnog grafa glumaca, možemo vidjeti kako se kvaliteta filmova poboljšava samo na početku. Možemo zaključiti da je broj napravljenih filmova dosta zanemariv već nakon drugog filma premda su filmovi iskusniji redatelja još uvijek u prosjeku malo bolji nego onih manje iskusnih.
+
+### Prvi i zadnji film redatelja
+```{r echo = FALSE}
+director_data <- data %>%
+  group_by(director_name) %>%
+  filter(n() >= 6)
+
+first_last_ratings <- director_data %>%
+  arrange(title_year) %>%
+  group_by(director_name) %>%
+  summarise(first_movie_rating = first(imdb_score), last_movie_rating = last(imdb_score))
+
+first_last_budget <- director_data %>%
+  arrange(title_year) %>%
+  group_by(director_name) %>%
+  summarise(first_movie_budget = first(budget), last_movie_budget = last(budget))
+
+first_last_gross <- director_data %>%
+  arrange(title_year) %>%
+  group_by(director_name) %>%
+  summarise(first_movie_gross = first(gross), last_movie_gross = last(gross))
+
+# Calculate the median of the first and last movie ratings
+median_ratings <- first_last_ratings %>%
+  summarise(median_first_rating = median(first_movie_rating, na.rm = TRUE),
+            median_last_rating = median(last_movie_rating, na.rm = TRUE))
+
+median_budget <- first_last_budget %>%
+  summarise(median_first_budget = median(first_movie_budget, na.rm = TRUE),
+            median_last_budget = median(last_movie_budget, na.rm = TRUE))
+
+median_gross <- first_last_gross %>%
+  summarise(median_first_gross = median(first_movie_gross, na.rm = TRUE),
+            median_last_gross = median(last_movie_gross, na.rm = TRUE))
+
+cat("Medijan ocjena prvog filma svih redatelja:", median_ratings$median_first_rating, "\n")
+cat("Medijan ocjena zadnjeg filma svih redatelja:", median_ratings$median_last_rating, "\n\n")
+cat("Medijan budžeta prvog filma svih redatelja:", dollar(median_budget$median_first_budget), "\n")
+cat("Medijan budžeta zadnjeg filma svih redatelja:", dollar(median_budget$median_last_budget), "\n\n")
+cat("Medijan bruto dohotka prvog filma svih redatelja:", dollar(median_gross$median_first_gross), "\n")
+cat("Medijan bruto dohotka zadnjeg filma svih redatelja:", dollar(median_gross$median_last_gross), "\n")
+```
+
+U ovom odjeljku promatramo prve i zadnje filmove redatelja. Ovi rezultati se ne razlikuju pretjerano od rezultata za prvi i zadnji film glumaca. Razlike vidimo u većoj razlici budžeta i manjoj razlici bruto dohotka.
+
+## Zaključak
+
+Analizirajući ovaj podatkovni skup došli smo do nekoliko zaključaka, što o samome skupu, što o industriji i ljudima koji se njom bave. 
+Što se tiče skupa, iznenadilo nas su se u njemu našle serije koje smo uspjeli identificirati uz pomoć stupca title_year koji je imao NA vrijednosti samo za serije. Još jedna opaska u skupu je ta da je skup vjerojatno iz 2016. godine i da filmovi iz te godine znaju imati drastično drugačiju ocjenu danas (2024. godine) nego tada, vjerojatno zbog malog broja glasova u to vrijeme. 
+Što se tiče stranice IMDb, saznali smo kako korisnici ipak ocjenjuju filmove blaže nego što bi trebali.
+Što se tiče industrije, zanimljivo je to da redatelji s najboljom prosječnom ocjenom svojih filmova većinom imaju samo jedan film kojim su se proslavili. Ostale opaske bile su u skladu s očekivanjima te su objašnjene neposredno ispod iznešenih podataka.
